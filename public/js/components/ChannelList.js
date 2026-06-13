@@ -23,6 +23,7 @@ class ChannelList {
         this.sources = [];
         this.isLoading = false;
         this.renderedChannels = [];
+        this.backupGroups = [];
 
         this.loadCollapsedState();
         this.init();
@@ -724,10 +725,11 @@ class ChannelList {
                 await this.loadM3uChannels(parseInt(id));
             }
 
-            // Load hidden items and favorites
+            // Load hidden items, favorites, and backup groups
             await Promise.all([
                 this.loadHiddenItems(),
-                this.loadFavorites()
+                this.loadFavorites(),
+                this.loadBackupGroups()
             ]);
 
             this.render();
@@ -763,7 +765,8 @@ class ChannelList {
 
             await Promise.all([
                 this.loadHiddenItems(),
-                this.loadFavorites()
+                this.loadFavorites(),
+                this.loadBackupGroups()
             ]);
             this.render();
         } catch (err) {
@@ -1222,6 +1225,10 @@ class ChannelList {
                 // Show EPG info modal
                 this.showEpgInfo(sourceId, itemId, streamId);
                 break;
+            case 'backups':
+                // Show backups management modal
+                this.openManageBackupsModal(itemId);
+                break;
         }
 
         this.hideContextMenu();
@@ -1456,6 +1463,352 @@ class ChannelList {
             const groupHidden = this.isHidden('group', ch.sourceId, ch.groupTitle);
             return !channelHidden && !groupHidden;
         });
+    }
+
+    async loadBackupGroups() {
+        try {
+            this.backupGroups = await API.backupGroups.getAll();
+            console.log('[ChannelList] Loaded', this.backupGroups.length, 'explicit backup groups');
+        } catch (err) {
+            console.error('[ChannelList] Error loading backup groups:', err);
+        }
+    }
+
+    getNormalizedName(name) {
+        if (!name) return '';
+        let normalized = name.toLowerCase();
+        // Remove common quality and backup suffixes/tags
+        normalized = normalized.replace(/\b(hd|sd|fhd|4k|8k|hevc|raw|backup|alt|temp|hdraw|1080p|720p|576p|480p|2160p)\d*\b/g, '');
+        // Remove non-alphanumeric characters
+        normalized = normalized.replace(/[^a-z0-9]/g, '');
+        // Strip trailing digits
+        normalized = normalized.replace(/\d+$/, '');
+        return normalized;
+    }
+
+    getBackupChannels(channel) {
+        if (!channel) return [];
+        // 1. Find if this channel is in an explicit backup group
+        const explicitGroup = this.backupGroups?.find(g => g.channelIds.includes(channel.id));
+        if (explicitGroup) {
+            return explicitGroup.channelIds
+                .map(id => this.channels.find(c => c.id === id))
+                .filter(c => c && c.id !== channel.id);
+        }
+
+        // 2. Fallback: Auto-group by normalized name similarity
+        const targetNorm = this.getNormalizedName(channel.name);
+        if (!targetNorm) return [];
+
+        return this.channels.filter(c => {
+            if (c.id === channel.id) return false;
+            
+            // Exclude hidden channels
+            const rawId = c.streamId || c.id;
+            if (this.isHidden('channel', c.sourceId, rawId)) return false;
+
+            return this.getNormalizedName(c.name) === targetNorm;
+        });
+    }
+
+    async openManageBackupsModal(channelId) {
+        const channel = this.channels.find(c => c.id === channelId);
+        if (!channel) return;
+
+        const modal = document.getElementById('modal');
+        const modalTitle = document.getElementById('modal-title');
+        const modalBody = document.getElementById('modal-body');
+        const modalFooter = document.getElementById('modal-footer');
+
+        modalTitle.textContent = `⚙️ Manage Backups for ${channel.name}`;
+
+        // Find if there is an existing explicit group
+        let group = this.backupGroups.find(g => g.channelIds.includes(channelId));
+        let groupName = group ? group.name : channel.name;
+        // Group channel objects (starting with this channel, then the rest in order)
+        let groupChannels = [];
+        if (group) {
+            groupChannels = group.channelIds
+                .map(id => this.channels.find(c => c.id === id))
+                .filter(Boolean);
+        } else {
+            groupChannels = [channel];
+        }
+
+        this.renderBackupsModalContent(channel, groupName, groupChannels, modalBody);
+
+        modalFooter.innerHTML = `
+            <button class="btn btn-secondary" id="backups-modal-cancel">Cancel</button>
+            <button class="btn btn-primary" id="backups-modal-save">Save Changes</button>
+        `;
+
+        modal.classList.add('active');
+
+        this.setupBackupsModalHandlers(channel, groupName, groupChannels, modal);
+    }
+
+    renderBackupsModalContent(channel, groupName, groupChannels, modalBody) {
+        // Find recommended backups (similar normalized names not in group)
+        const targetNorm = this.getNormalizedName(channel.name);
+        const recommendations = this.channels.filter(c => {
+            if (c.id === channel.id) return false;
+            if (groupChannels.some(gc => gc.id === c.id)) return false;
+            const rawId = c.streamId || c.id;
+            if (this.isHidden('channel', c.sourceId, rawId)) return false;
+            return this.getNormalizedName(c.name) === targetNorm;
+        });
+
+        let membersHtml = groupChannels.map((c, index) => {
+            const isPrimary = c.id === channel.id;
+            return `
+                <div class="backup-member-item ${isPrimary ? 'primary-member' : ''}" data-id="${c.id}">
+                    <img class="logo" src="${this.getProxiedImageUrl(c.tvgLogo)}" onerror="this.onerror=null;this.src='/img/placeholder.png'">
+                    <div class="info">
+                        <div class="name">${this.escapeHtml(c.name)} ${isPrimary ? '<span class="hint">(Current)</span>' : ''}</div>
+                        <div class="source">Source ID: ${c.sourceId} (${c.sourceType})</div>
+                    </div>
+                    <div class="actions">
+                        <button class="btn-action btn-move-up" title="Move Up" ${index === 0 ? 'disabled style="opacity:0.3;cursor:default;"' : ''}>↑</button>
+                        <button class="btn-action btn-move-down" title="Move Down" ${index === groupChannels.length - 1 ? 'disabled style="opacity:0.3;cursor:default;"' : ''}>↓</button>
+                        <button class="btn-action danger btn-remove" title="Remove" ${isPrimary ? 'disabled style="opacity:0.3;cursor:default;"' : ''}>&times;</button>
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+        if (groupChannels.length === 0) {
+            membersHtml = '<p class="hint">No backup members configured</p>';
+        }
+
+        let recsHtml = '';
+        if (recommendations.length > 0) {
+            recsHtml = `
+                <h4>Recommended Backups</h4>
+                <div class="backup-recommendations-list">
+                    ${recommendations.map(c => `
+                        <div class="backup-rec-item" data-id="${c.id}">
+                            <img class="logo" src="${this.getProxiedImageUrl(c.tvgLogo)}" onerror="this.onerror=null;this.src='/img/placeholder.png'">
+                            <div class="info">
+                                <div class="name">${this.escapeHtml(c.name)}</div>
+                                <div class="source">Source ID: ${c.sourceId} (${c.sourceType})</div>
+                            </div>
+                            <button class="btn-add">+ Add</button>
+                        </div>
+                    `).join('')}
+                </div>
+            `;
+        } else {
+            recsHtml = `<p class="hint">No automatic backup recommendations found.</p>`;
+        }
+
+        modalBody.innerHTML = `
+            <div class="backups-modal-container">
+                <div class="form-group">
+                    <label for="backup-group-name">Backup Group Name</label>
+                    <input type="text" id="backup-group-name" class="form-input" value="${this.escapeHtml(groupName)}">
+                </div>
+                
+                <h4>Backup Members & Try Order</h4>
+                <div class="backup-members-list" id="backup-members-list">
+                    ${membersHtml}
+                </div>
+                
+                <div class="backup-add-section" style="margin-top: var(--space-lg); border-top: 1px solid var(--color-border); padding-top: var(--space-md);">
+                    <div class="form-group">
+                        <label for="backup-search-input">Search & Add Backups</label>
+                        <div class="search-wrapper">
+                            <input type="text" id="backup-search-input" class="search-input" placeholder="Type channel name to search...">
+                        </div>
+                    </div>
+                    <div class="backup-search-results" id="backup-search-results" style="max-height: 150px; overflow-y: auto; display: none; margin-bottom: var(--space-md); border: 1px solid var(--color-border); padding: 8px; border-radius: var(--radius-md); background: rgba(0,0,0,0.1);">
+                        <!-- Search results -->
+                    </div>
+                    
+                    <div id="backup-recommendations-container">
+                        ${recsHtml}
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    setupBackupsModalHandlers(channel, initialGroupName, initialChannels, modal) {
+        let currentChannels = [...initialChannels];
+        const modalBody = document.getElementById('modal-body');
+        const searchInput = document.getElementById('backup-search-input');
+        const searchResults = document.getElementById('backup-search-results');
+
+        const updateModalUI = () => {
+            const nameInput = document.getElementById('backup-group-name');
+            const gName = nameInput ? nameInput.value : initialGroupName;
+            this.renderBackupsModalContent(channel, gName, currentChannels, modalBody);
+            attachListListeners();
+        };
+
+        const attachListListeners = () => {
+            const listEl = document.getElementById('backup-members-list');
+            if (!listEl) return;
+
+            listEl.querySelectorAll('.backup-member-item').forEach((item, index) => {
+                const id = item.dataset.id;
+                
+                // Move Up
+                item.querySelector('.btn-move-up')?.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    if (index > 0) {
+                        const temp = currentChannels[index];
+                        currentChannels[index] = currentChannels[index - 1];
+                        currentChannels[index - 1] = temp;
+                        updateModalUI();
+                    }
+                });
+
+                // Move Down
+                item.querySelector('.btn-move-down')?.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    if (index < currentChannels.length - 1) {
+                        const temp = currentChannels[index];
+                        currentChannels[index] = currentChannels[index + 1];
+                        currentChannels[index + 1] = temp;
+                        updateModalUI();
+                    }
+                });
+
+                // Remove
+                item.querySelector('.btn-remove')?.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    currentChannels = currentChannels.filter(c => c.id !== id);
+                    updateModalUI();
+                });
+            });
+
+            // Recommendations add
+            const recsContainer = document.getElementById('backup-recommendations-container');
+            recsContainer?.querySelectorAll('.backup-rec-item').forEach(item => {
+                const id = item.dataset.id;
+                item.querySelector('.btn-add')?.addEventListener('click', () => {
+                    const chToAdd = this.channels.find(c => c.id === id);
+                    if (chToAdd && !currentChannels.some(cc => cc.id === id)) {
+                        currentChannels.push(chToAdd);
+                        updateModalUI();
+                    }
+                });
+            });
+
+            // Search input handlers
+            const sInput = document.getElementById('backup-search-input');
+            const sResults = document.getElementById('backup-search-results');
+            
+            if (sInput && sResults) {
+                // Restore search value if we re-rendered
+                if (this._lastBackupQuery) {
+                    sInput.value = this._lastBackupQuery;
+                    runSearch(this._lastBackupQuery, sResults);
+                }
+
+                sInput.addEventListener('input', (e) => {
+                    const query = e.target.value.toLowerCase().trim();
+                    this._lastBackupQuery = query;
+                    runSearch(query, sResults);
+                });
+            }
+        };
+
+        const runSearch = (query, resultsEl) => {
+            if (!query) {
+                resultsEl.style.display = 'none';
+                resultsEl.innerHTML = '';
+                return;
+            }
+
+            const matches = this.channels.filter(c => {
+                if (currentChannels.some(cc => cc.id === c.id)) return false;
+                const rawId = c.streamId || c.id;
+                if (this.isHidden('channel', c.sourceId, rawId)) return false;
+                return c.name.toLowerCase().includes(query);
+            }).slice(0, 10);
+
+            if (matches.length === 0) {
+                resultsEl.style.display = 'block';
+                resultsEl.innerHTML = '<p class="hint">No matching channels found</p>';
+                return;
+            }
+
+            resultsEl.style.display = 'flex';
+            resultsEl.className = 'backup-search-results';
+            resultsEl.innerHTML = matches.map(c => `
+                <div class="backup-search-item" data-id="${c.id}">
+                    <img class="logo" src="${this.getProxiedImageUrl(c.tvgLogo)}" onerror="this.onerror=null;this.src='/img/placeholder.png'">
+                    <div class="info">
+                        <div class="name">${this.escapeHtml(c.name)}</div>
+                        <div class="source">Source ID: ${c.sourceId} (${c.sourceType})</div>
+                    </div>
+                    <button class="btn-add">+ Add</button>
+                </div>
+            `).join('');
+
+            resultsEl.querySelectorAll('.backup-search-item').forEach(item => {
+                const id = item.dataset.id;
+                item.querySelector('.btn-add')?.addEventListener('click', () => {
+                    const chToAdd = this.channels.find(c => c.id === id);
+                    if (chToAdd) {
+                        currentChannels.push(chToAdd);
+                        this._lastBackupQuery = ''; // Clear query on selection
+                        updateModalUI();
+                    }
+                });
+            });
+        };
+
+        attachListListeners();
+
+        // Modal cleanups
+        const cleanup = () => {
+            modal.classList.remove('active');
+            modal.querySelector('.modal-close').onclick = null;
+            this._lastBackupQuery = '';
+        };
+
+        modal.querySelector('.modal-close').onclick = cleanup;
+        document.getElementById('backups-modal-cancel').onclick = cleanup;
+
+        // Save action
+        document.getElementById('backups-modal-save').onclick = async () => {
+            const nameInput = document.getElementById('backup-group-name');
+            const finalName = nameInput ? nameInput.value.trim() : channel.name;
+
+            if (!finalName) {
+                alert('Backup group name is required.');
+                return;
+            }
+
+            const finalChannelIds = currentChannels.map(c => c.id);
+
+            // Clean up: remove current channels from other backup groups
+            this.backupGroups = this.backupGroups.filter(g => {
+                if (g.name === finalName || g.channelIds.includes(channel.id)) return false;
+                g.channelIds = g.channelIds.filter(id => !finalChannelIds.includes(id));
+                return g.channelIds.length >= 2;
+            });
+
+            // Save new/updated group if it has at least 2 channels
+            if (finalChannelIds.length >= 2) {
+                this.backupGroups.push({
+                    name: finalName,
+                    channelIds: finalChannelIds
+                });
+            }
+
+            try {
+                // Save to server
+                await API.backupGroups.save(this.backupGroups);
+                console.log('[ChannelList] Saved backup groups successfully');
+                cleanup();
+            } catch (err) {
+                console.error('[ChannelList] Failed to save backup groups:', err);
+                alert('Failed to save backup groups: ' + err.message);
+            }
+        };
     }
 }
 

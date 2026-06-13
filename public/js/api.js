@@ -77,6 +77,12 @@ const API = {
         hideAll: (sourceId, contentType) => API.request('POST', '/channels/hide/all', { sourceId, contentType })
     },
 
+    // Backup Groups
+    backupGroups: {
+        getAll: () => API.request('GET', '/backup-groups'),
+        save: (groups) => API.request('POST', '/backup-groups', groups)
+    },
+
     // Favorites
     favorites: {
         getAll: (sourceId = null, itemType = null) => {

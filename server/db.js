@@ -465,4 +465,20 @@ const users = {
   }
 };
 
-module.exports = { loadDb, saveDb, sources, hiddenItems, favorites, settings, users, getDefaultSettings, getUserAgent, USER_AGENT_PRESETS };
+// Backup Groups operations
+const backupGroups = {
+  async getAll() {
+    const db = await loadDb();
+    return db.backupGroups || [];
+  },
+
+  async save(groups) {
+    const db = await loadDb();
+    db.backupGroups = groups;
+    await saveDb(db);
+    return db.backupGroups;
+  }
+};
+
+module.exports = { loadDb, saveDb, sources, hiddenItems, favorites, settings, users, backupGroups, getDefaultSettings, getUserAgent, USER_AGENT_PRESETS };
+
