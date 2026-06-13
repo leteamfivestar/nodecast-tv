@@ -1567,6 +1567,8 @@ kbd {
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-lg);
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .modal-header {
@@ -1595,6 +1597,8 @@ kbd {
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
+  flex: 1;
+  min-height: 0;
 }
 
 .modal-footer {
@@ -4298,7 +4302,8 @@ kbd {
 }
 
 .modal-overlay .modal {
-  display: block;
+  display: flex;
+  flex-direction: column;
   position: relative;
   inset: auto;
   background: var(--color-bg-secondary);
@@ -4356,6 +4361,9 @@ kbd {
 
 .modal-overlay .modal-body {
   padding: var(--space-lg);
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
 }
 
 .modal-overlay .modal-footer {
