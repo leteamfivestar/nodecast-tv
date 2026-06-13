@@ -812,6 +812,7 @@ class VideoPlayer {
             console.log('Buffer append error, recovering...');
             this.hls.recoverMediaError();
         }
+    }
 
     /**
      * Show the now playing overlay briefly
